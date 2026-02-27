@@ -1,0 +1,98 @@
+# Import Python libraries
+import subprocess
+import vertexai
+from vertexai.generative_models import GenerativeModel, Part
+from google.cloud import bigquery
+from google.cloud import storage
+import json
+import io
+import matplotlib.pyplot as plt
+from IPython.display import HTML, display
+from IPython.display import Audio
+from pprint import pprint
+
+# Step 1: Fetch Project ID and Location
+def get_project_info():
+    try:
+        # Retrieve the active project ID
+        project_result = subprocess.run(
+            ["gcloud", "config", "get-value", "project"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        # Retrieve the active location (region)
+        region_result = subprocess.run(
+            ["gcloud", "compute", "project-info", "describe", "--format=value(commonInstanceMetadata.items[google-compute-default-region])"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        if project_result.returncode == 0 and region_result.returncode == 0:
+            project_id = project_result.stdout.strip()
+            location = region_result.stdout.strip()
+            return project_id, location
+        else:
+            print(f"Error fetching project info: {project_result.stderr} {region_result.stderr}")
+            return None, None
+    except Exception as e:
+        print(f"Exception occurred: {e}")
+        return None, None
+
+# Step 2: Initialize Vertex AI
+project_id, location = get_project_info()
+if project_id and location:
+    print(f"Using project ID: {project_id} and location: {location}")
+
+    # Initialize Vertex AI
+    vertexai.init(project=project_id, location=location)
+
+    model = GenerativeModel(model_name="gemini-1.5-flash")
+
+    prompt = """
+    Please provide a transcript for the audio.
+    Then provide a summary for the audio.
+    Then identify the keywords in the transcript.
+    Be concise and short.
+    Do not make up any information that is not part of the audio and do not be verbose.
+    Then determine the sentiment of the audio: positive, neutral or negative.
+
+    Also, you are a customer service representative.
+    How would you respond to this customer review?
+    From the customer reviews provide actions that the location can take to improve. The response and the actions should be simple, and to the point. Do not include any extraneous characters in your response.
+    Answer in JSON format with five keys: transcript, summary, keywords, sentiment, response and actions. Transcript should be a string, summary should be a string, keywords should be a list, sentiment should be a string, customer response should be a string, and actions should be a string.
+    """
+
+    bucket_name = f"{project_id}-bucket"  # Keep the bucket name as is
+    folder_name = 'gsp1249/audio'  # Include the trailing '/'
+
+    def list_mp3_files(bucket_name, folder_name):
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        print('Accessing ', bucket, ' with ', storage_client)
+
+        blobs = bucket.list_blobs(prefix=folder_name)
+
+        mp3_files = []
+        for blob in blobs:
+            if blob.name.endswith('.mp3'):
+                mp3_files.append(blob.name)
+        return mp3_files
+
+    file_names = list_mp3_files(bucket_name, folder_name)
+    if file_names:
+        print("MP3 files found:")
+        print(file_names)
+        for file_name in file_names:
+            audio_file_uri = f"gs://{bucket_name}/{file_name}"
+            print('Processing file at ', audio_file_uri)
+            audio_file = Part.from_uri(audio_file_uri, mime_type="audio/mpeg")
+            contents = [audio_file, prompt]
+            response = model.generate_content(contents)
+            print(response.text)
+    else:
+        print("No MP3 files found in the specified folder.")
+else:
+    print("Project ID and location could not be determined.")
